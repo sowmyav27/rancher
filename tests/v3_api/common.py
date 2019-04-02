@@ -12,6 +12,7 @@ from rancher import ApiError
 from lib.aws import AmazonWebServices
 
 DEFAULT_TIMEOUT = 120
+DEFAULT_MULTI_CLUSTER_APP_TIMEOUT = 300
 
 CATTLE_TEST_URL = os.environ.get('CATTLE_TEST_URL', "http://localhost:80")
 ADMIN_TOKEN = os.environ.get('ADMIN_TOKEN', "None")
@@ -29,7 +30,7 @@ RANCHER_CLEANUP_CLUSTER = \
 env_file = os.path.join(
     os.path.dirname(os.path.realpath(__file__)),
     "rancher_env.config")
-
+CLUSTER_NAME_2 = ""
 
 def random_str():
     return 'random-{0}-{1}'.format(random_num(), int(time.time()))
@@ -1087,3 +1088,70 @@ def validate_file_content(pod, content, filename):
     cmd_get_content = "/bin/bash -c 'cat {0}' ".format(filename)
     output = kubectl_pod_exec(pod, cmd_get_content)
     assert output.strip().decode('utf-8') == content
+
+
+def wait_for_mcapp_to_active(client, multiClusterApp, timeout=DEFAULT_MULTI_CLUSTER_APP_TIMEOUT):
+    print("\nuuid:")
+    print(multiClusterApp.uuid)
+    time.sleep(5)
+    mcapps = client.list_multiClusterApp(uuid=multiClusterApp.uuid, name=multiClusterApp.name).data
+    start = time.time()
+    assert len(mcapps) == 1
+    mapp = mcapps[0]
+    print(mapp.state)
+    while mapp.state != "active":
+        print(mapp.uuid)
+        print(mapp.state)
+        if time.time() - start > timeout:
+            raise AssertionError(
+                "Timed out waiting for state to get to active")
+        time.sleep(.5)
+        multiclusterapps = client.list_multiClusterApp(uuid=multiClusterApp.uuid, name=multiClusterApp.name).data
+        assert len(multiclusterapps) == 1
+        mapp = multiclusterapps[0]
+    return mapp
+
+
+def validate_mcapp_cluster(app_id, p_client):
+    mcapp = p_client.list_app(name=app_id).data
+    assert len(mcapp) == 1
+    app = mcapp[0]
+    return app
+
+
+def wait_for_mcapp_cluster_level_to_active(client, app_id, timeout=DEFAULT_MULTI_CLUSTER_APP_TIMEOUT):
+    mcapps = client.list_app(name=app_id).data
+    start = time.time()
+    assert len(mcapps) == 1
+    mapp = mcapps[0]
+    while mapp.state != "active":
+        if time.time() - start > timeout:
+            raise AssertionError(
+                "Timed out waiting for state to get to active")
+        time.sleep(.5)
+        apps = client.list_app(name=app_id).data
+        assert len(apps) == 1
+        mapp = apps[0]
+    return mapp
+
+
+def get_admin_client_and_cluster_mcapp():
+    clusters = []
+    client = get_admin_client()
+    if CLUSTER_NAME == "" or CLUSTER_NAME_2 == "":
+        clusters = client.list_cluster().data
+    else:
+        clusters.append(client.list_cluster(name=CLUSTER_NAME).data)
+        clusters.append(client.list_cluster(name=CLUSTER_NAME_2).data)
+    assert len(clusters) == 2
+    return client, clusters
+
+
+def validate_multi_cluster_app_cluster(app_id1, app_id2, p_client1, p_client2):
+    validate_mcapp_cluster(app_id1, p_client1)
+    if app_id2 != "":
+        validate_mcapp_cluster(app_id2, p_client2)
+    # verify app in cluster is active or not
+    wait_for_mcapp_cluster_level_to_active(p_client1, app_id1)
+    if app_id2 != "":
+        wait_for_mcapp_cluster_level_to_active(p_client2, app_id2)
